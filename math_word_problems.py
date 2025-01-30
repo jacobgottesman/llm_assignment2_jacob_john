@@ -10,9 +10,9 @@ def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature
 
     # try to tokenize prompt to an mps tensor, if it fails, tokenize it to a CPU tensor
     try:
-        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("mps")
+        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("cuda")
     except:
-        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"]
+        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("mps")
 
     # generate n_samples number of solutions
     outputs = model.generate(
