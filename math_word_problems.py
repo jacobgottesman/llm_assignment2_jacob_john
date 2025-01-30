@@ -1,10 +1,9 @@
-from datasets import load_dataset
+import datasets
 from tqdm import tqdm
 import re
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import json 
-
-from timeout_decorator import timeout, TimeoutError
+import torch
 
 # generate 20 solutions per prompt
 def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature=0.2, n_samples=20):
@@ -30,23 +29,78 @@ def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature
     solutions = [tokenizer.decode(output) for output in outputs]
 
     # clip solution text after the end of the function
-    pattern = "|".join(["\ndef", "\nclass", "\nif", "\nprint"])
+    pattern = "|".join(["\ndef", "\nclass", "\nif", "\nprint", "\n"])
     clipped_solutions = [re.split(pattern, solution)[0] for solution in solutions]
 
     return clipped_solutions
 
-def test_solutions(sols, problem):
-    results = []
-    failures = {}
-    for i, sol in enumerate(sols.values()):
-        try:
-            code = str(problem['prompt'] + '\n' + sol + '\n' + problem["tests"])
-            execute_code(code)  # Executes with a 5-second timeout
-            results.append(1)
-        except TimeoutError:
-            failures[i] = {"solution": sol, "error": "Execution timed out"}
-            results.append(0)
-        except Exception as e:
-            failures[i] = {"solution": sol, "error": str(e)}
-            results.append(0)
-    return results, failures
+def test_problem(prompt, answer, tokenizer, model):
+    # this generates solutions and returns the number of correct math solutions
+
+    solutions = generate_solutions(prompt, tokenizer, model)
+
+    num_correct = sum([1 if sol == answer else 0 for sol in solutions])
+
+    return num_correct
+
+def main():
+
+    # load in data
+    test_data = datasets.load_dataset("nuprl/engineering-llm-systems", "math_word_problems", split="test")
+
+    MODEL = "/scratch/bchk/aguha/models/llama3p1_8b_base"
+    DEVICE = "cuda"
+
+    # load in tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, padding_side="left")
+    tokenizer.pad_token = tokenizer.eos_token 
+
+    # load in model
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL,
+        torch_dtype=torch.bfloat16,
+    ).to(device=DEVICE)
+
+    # Zero shot prompting
+    num_correct = 0
+    for problem in test_data:
+
+        num_corect += test_problem(problem['question'], problem['answer'], tokenizer, model)
+
+    print(f'Zero Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+
+    # few shot prompting
+    num_correct = 0
+    for problem in test_data:
+
+        few_shot_prompt = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps.
+
+                    Examples:
+                    Q1: A train travels 120 miles in 3 hours. What is its average speed in miles per hour?
+                    A1: 40
+
+                    Q2: If a rectangle has a length of 8 cm and a width of 5 cm, what is its area in square centimeters?
+                    A2: 40
+
+                    Q3: A store sells apples for $1.25 each. If you buy 4 apples, how much do you pay in total?
+                    A3: 5.00
+                    
+                    Q4: {problem['question']}
+                    A4: """
+
+        num_corect += test_problem(few_shot_prompt, problem['answer'], tokenizer, model)
+
+    print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+
+    # Zero shot prompting
+    num_correct = 0
+    for problem in test_data:
+        chain_prompt = f"""Instruction: Solve the following math word problem step by step, reasoning through the solution before providing the final numerical answer.
+                         Question: {problem['question']},
+                         Answer: """
+
+        num_corect += test_problem(chain_prompt, problem['answer'], tokenizer, model)
+
+    print(f'Chain-of-though Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+
+
