@@ -60,18 +60,19 @@ def main():
         MODEL,
         torch_dtype=torch.bfloat16,
     ).to(device=DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-360M")
 
     # Zero shot prompting
     num_correct = 0
-    for problem in test_data:
+    for problem in tqdm(test_data):
 
-        num_corect += test_problem(problem['question'], problem['answer'], tokenizer, model)
+        num_correct += test_problem(problem['question'], problem['answer'], tokenizer, model)
 
     print(f'Zero Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
 
     # few shot prompting
     num_correct = 0
-    for problem in test_data:
+    for problem in tqdm(test_data):
 
         few_shot_prompt = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps.
 
@@ -88,19 +89,21 @@ def main():
                     Q4: {problem['question']}
                     A4: """
 
-        num_corect += test_problem(few_shot_prompt, problem['answer'], tokenizer, model)
+        num_correct += test_problem(few_shot_prompt, problem['answer'], tokenizer, model)
 
     print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
 
     # Zero shot prompting
     num_correct = 0
-    for problem in test_data:
+    for problem in tqdm(test_data):
         chain_prompt = f"""Instruction: Solve the following math word problem step by step, reasoning through the solution before providing the final numerical answer.
                          Question: {problem['question']},
                          Answer: """
 
-        num_corect += test_problem(chain_prompt, problem['answer'], tokenizer, model)
+        num_correct += test_problem(chain_prompt, problem['answer'], tokenizer, model)
 
     print(f'Chain-of-though Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
 
 
+if __name__ == "__main__":
+    main()
