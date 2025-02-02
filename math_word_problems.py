@@ -5,14 +5,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import json 
 import torch
 
-# generate 20 solutions per prompt
+# generate n_samples solutions per prompt
 def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature=0.2, n_samples=20):
 
     # try to tokenize prompt to an mps tensor, if it fails, tokenize it to a CPU tensor
-    try:
-        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("cuda")
-    except:
-        inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("mps")
+    inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("cuda")
 
     # generate n_samples number of solutions
     outputs = model.generate(
@@ -28,18 +25,36 @@ def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature
     outputs = [output[inputs.shape[1]:] for output in outputs]
     solutions = [tokenizer.decode(output) for output in outputs]
 
-    # clip solution text after the end of the function
-    pattern = "|".join(["\ndef", "\nclass", "\nif", "\nprint", "\n"])
-    clipped_solutions = [re.split(pattern, solution)[0] for solution in solutions]
+    return solutions
 
-    return clipped_solutions
-
-def test_problem(prompt, answer, tokenizer, model):
+def test_problem(prompt, answer, tokenizer, model, max_tokens = 300, n_samples =20, temp=.2):
     # this generates solutions and returns the number of correct math solutions
+    
+    # generate solutions
+    solutions = generate_solutions(prompt, tokenizer, model, max_new_tokens = max_tokens, n_samples = n_samples, temperature=temp)
+    
+    # get number of correct solutions
+    num_correct = sum([1 if str(answer) == sol else 0 for sol in solutions])
 
-    solutions = generate_solutions(prompt, tokenizer, model)
+    return num_correct
 
-    num_correct = sum([1 if sol == answer else 0 for sol in solutions])
+def test_problem_chain(prompt, answer, tokenizer, model, max_tokens = 300, n_samples =20, temp=.2):
+    # this generates solutions and returns the number of correct math solutions for a chain of thought prompt
+
+    # get solutions
+    solutions = generate_solutions(prompt, tokenizer, model, max_new_tokens = max_tokens, n_samples = n_samples, temperature=temp)
+    
+    num_correct = 0
+    for sol in solutions:
+        
+        # extact answer from response
+        match = re.search(r'ANSWER[^0-9$+-]*\s*\$?([-+]?\d*\.?\d+)', sol)
+        if match:
+            extracted_answer = float(match.group(1))
+            
+            # check for correctness of answer
+            if extracted_answer == answer:
+                num_correct+=1
 
     return num_correct
 
@@ -50,6 +65,7 @@ def main():
 
     MODEL = "/scratch/bchk/aguha/models/llama3p1_8b_base"
     DEVICE = "cuda"
+    n_samp =5
 
     # load in tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL, padding_side="left")
@@ -60,20 +76,21 @@ def main():
         MODEL,
         torch_dtype=torch.bfloat16,
     ).to(device=DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-360M")
 
     # Zero shot prompting
     num_correct = 0
     for problem in tqdm(test_data):
 
-        num_correct += test_problem(problem['question'], problem['answer'], tokenizer, model)
+        # test zero shot
+        num_correct += test_problem(f"Question: {problem['question']} \n Answer: ", problem['answer'], tokenizer, model, max_tokens=1, n_samples=n_samp, temp=.2)
 
-    print(f'Zero Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+    print(f'Zero Shot Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
 
     # few shot prompting
     num_correct = 0
     for problem in tqdm(test_data):
 
+        # create multi shot prompt
         few_shot_prompt = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps.
 
                     Examples:
@@ -85,25 +102,43 @@ def main():
 
                     Q3: A store sells apples for $1.25 each. If you buy 4 apples, how much do you pay in total?
                     A3: 5.00
-                    
+
                     Q4: {problem['question']}
                     A4: """
+        
+        # test multi-shot
+        num_correct += test_problem(few_shot_prompt, problem['answer'], tokenizer, model, n_samples = n_samp, max_tokens = 1)
 
-        num_correct += test_problem(few_shot_prompt, problem['answer'], tokenizer, model)
 
-    print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+    print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
 
-    # Zero shot prompting
     num_correct = 0
     for problem in tqdm(test_data):
-        chain_prompt = f"""Instruction: Solve the following math word problem step by step, reasoning through the solution before providing the final numerical answer.
-                         Question: {problem['question']},
-                         Answer: """
+        
+        # create chain of thought prompt
+        chain_prompt = f"""
+        Instruction: Solve the following problem using a step-by-step approach. Follow these steps:
+        1. Identify the key information and given values.
+        2. Break the problem into smaller subproblems if necessary.
+        3. Perform the calculations systematically, explaining each step clearly.
+        4. Double-check your calculations for correctness.
+        5. At the end, output the final answer in the exact format:
 
-        num_correct += test_problem(chain_prompt, problem['answer'], tokenizer, model)
+           ANSWER: X
 
-    print(f'Chain-of-though Accuracy: {round(num_correct/(len(test_data)*20), 2)}')
+        Question: {problem['question']}
+
+        Explanation:
+        """
+
+        # test chain of thought
+        num_correct += test_problem_chain(chain_prompt, problem['answer'], tokenizer, model, n_samples = n_samp, max_tokens = 500)
 
 
+    print(f'Chain of Thought Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
+
+    
 if __name__ == "__main__":
     main()
+
+
