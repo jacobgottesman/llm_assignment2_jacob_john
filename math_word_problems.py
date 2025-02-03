@@ -5,7 +5,6 @@ import re
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 from collections import namedtuple
-from pprint import pprint
 from tqdm.auto import tqdm
 
 ZeroShotOut = namedtuple("ZeroShotOut", ["question", "answer", "completion", "solution", "score"])
@@ -345,6 +344,7 @@ def load():
     return test_data, tokenizer, model
 
 def main():
+    global MODEL
     # load model name
     if len(sys.argv) > 1:
         MODEL = sys.argv[1]
