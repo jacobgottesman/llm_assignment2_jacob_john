@@ -1,19 +1,39 @@
+import sys
 import datasets
 from tqdm import tqdm
 import re
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import json 
 import torch
 from collections import namedtuple
 from pprint import pprint
 from tqdm.auto import tqdm
 
+ZeroShotOut = namedtuple("ZeroShotOut", ["question", "answer", "completion", "solution", "score"])
+FewShotOut = namedtuple("FewShotOut", ["question", "answer", "completion", "solution", "score"])
 COTOut = namedtuple("COTOut", ["question", "answer", "completion", "solution", "score"])
 PALOut = namedtuple("PALOut", ["question", "answer", "completion", "solution", "score", "error"])
 
 MODEL = "/scratch/bchk/aguha/models/llama3p1_8b_base"
 DEVICE = "cuda"
 
+ZERO_SHOT_PROMPT = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps."""
+FEW_SHOT_PROMPT = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps.
+
+Examples:
+Question: A train travels 120 miles in 3 hours. What is its average speed in miles per hour?
+
+Answer: 40
+
+
+Question: If a rectangle has a length of 8 cm and a width of 5 cm, what is its area in square centimeters?
+
+Answer: 40
+
+
+Question: A store sells apples for $1.25 each. If you buy 4 apples, how much do you pay in total?
+
+Answer: 5.00
+"""
 COT_PROMPT = f"""Instruction: Solve the following problem using a step-by-step approach. Follow these steps:
     1. Identify the key information and given values.
     2. Break the problem into smaller subproblems if necessary.
@@ -162,73 +182,99 @@ def solve():
     return pizza_boxes
 """
 
-# generate n_samples solutions per prompt
-def generate_solutions(prompt, tokenizer, model, max_new_tokens=300, temperature=0.2, n_samples=20):
+# split list into sublists of size x
+def split_list(l, x):
+    return [l[i:i + x] for i in range(0, len(l), x)]
 
-    # try to tokenize prompt to an mps tensor, if it fails, tokenize it to a CPU tensor
-    inputs = tokenizer(prompt, return_tensors="pt")["input_ids"].to("cuda")
-
-    # generate n_samples number of solutions
-    outputs = model.generate(
-        inputs,
-        pad_token_id = tokenizer.eos_token_id,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_p=None,
-        num_return_sequences=n_samples)
-    
-    # only decode the new tokens after the input prompt
-    outputs = [output[inputs.shape[1]:] for output in outputs]
-    solutions = [tokenizer.decode(output) for output in outputs]
-
-    return solutions
-
-def test_problem(prompt, answer, tokenizer, model, max_tokens = 300, n_samples =20, temp=.2):
-    # this generates solutions and returns the number of correct math solutions
-    
-    # generate solutions
-    solutions = generate_solutions(prompt, tokenizer, model, max_new_tokens = max_tokens, n_samples = n_samples, temperature=temp)
-    
-    # get number of correct solutions
-    num_correct = sum([1 if str(answer) == sol else 0 for sol in solutions])
-
-    return num_correct
+# extract number from string and return as integer
+def extract_number(completion):
+    match = re.search(r'\s(\d+(\.\d+)?)', completion)
+    return round(float(match.group(1))) if match else completion
 
 def generate_batch(prompts, tokenizer, model, kwargs):
+    # pad inputs to accomodate batch, load inputs to gpu
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(DEVICE)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             pad_token_id=tokenizer.eos_token_id,
             **kwargs)
+    # decode tokens after input prompt tokens
     outputs = [output[inputs["input_ids"].shape[1]:] for output in outputs]
     return [tokenizer.decode(output) for output in outputs]
 
+def zero_shot(model, tokenizer, batch):
+    # build prompt batch
+    questions = [problem["question"] for problem in batch]
+    prompts = [f"{ZERO_SHOT_PROMPT}\n\nQuestion: {question}\n\nAnswer:" for question in questions]
+
+    # generate completions
+    completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 5, "do_sample": True, "temperature": 0.2, "top_p": None, "num_return_sequences": 1 })
+    zero_shot_out = []
+    for problem, completion in zip(batch, completions):
+        # extract integer answer
+        solution = extract_number(completion)
+        if solution != problem["answer"]:
+            # incorrect solution
+            out = ZeroShotOut(problem["question"], problem["answer"], completion, solution, 0)
+            zero_shot_out.append(out)
+        else:
+            # correct solution
+            out = ZeroShotOut(problem["question"], problem["answer"], completion, solution, 1)
+            zero_shot_out.append(out)
+    return zero_shot_out
+
+def few_shot(model, tokenizer, batch):
+    # build prompt batch
+    questions = [problem["question"] for problem in batch]
+    prompts = [f"{FEW_SHOT_PROMPT}\n\nQuestion: {question}\n\nAnswer:" for question in questions]
+
+    # generate completions
+    completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 5, "do_sample": True, "temperature": 0.2, "top_p": None, "num_return_sequences": 1 })
+    few_shot_out = []
+    for problem, completion in zip(batch, completions):
+        # extract integer answer
+        solution = extract_number(completion)
+        if solution != problem["answer"]:
+            # incorrect solution
+            out = FewShotOut(problem["question"], problem["answer"], completion, solution, 0)
+            few_shot_out.append(out)
+        else:
+            # correct solution
+            out = FewShotOut(problem["question"], problem["answer"], completion, solution, 1)
+            few_shot_out.append(out)
+    return few_shot_out
+
 def cot_process_completion(completion):
+    # match string Answer: x where x is some number and return x as an integer
     match = re.search(r'Answer[^0-9$+-]*\s*\$?([-+]?\d*\.?\d+)', completion)
     if match:
         return round(float(match.group(1)))
     return completion.strip()
 
 def cot(model, tokenizer, batch):
+    # build prompt batch
     questions = [problem["question"] for problem in batch]
     prompts = [f"{COT_PROMPT}\n\nQuestion: {question}\n\nReasoning:" for question in questions]
 
+    # generate completions
     completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 300, "do_sample": True, "temperature": 0.2, "top_p": 0.9, "top_k": 50, "num_return_sequences": 1 })
     cot_out = []
     for problem, completion in zip(batch, completions):
+        # extract integer answer
         solution = cot_process_completion(completion)
         if solution != problem["answer"]:
+            # incorrect solution
             out = COTOut(problem["question"], problem["answer"], completion, solution, 0)
             cot_out.append(out)
-            pprint(out._asdict(), indent=2)
         else:
+            # correct solution
             out = COTOut(problem["question"], problem["answer"], completion, solution, 1)
             cot_out.append(out)
     return cot_out
 
 def pal_execute_completion(completion):
+    # load function string into python object, execute, and return solution
     try:
         exec(completion)
         solution = round(eval("solve()"))
@@ -237,6 +283,7 @@ def pal_execute_completion(completion):
         return None, e
 
 def pal_process_completion(tokenizer, completion):
+    # extract the function string from model completion (before 'Question' text or 'end of string' text)
     split_index = min(
         completion.find("Question") if "Question" in completion else float("inf"),
         completion.find(tokenizer.eos_token) if tokenizer.eos_token in completion else float("inf")
@@ -244,33 +291,36 @@ def pal_process_completion(tokenizer, completion):
     return completion[:split_index].strip() if split_index != float("inf") else completion.strip()
 
 def pal(model, tokenizer, batch):
+    # build prompt batch
     questions = [problem["question"] for problem in batch]
     prompts = [f"{PAL_PROMPT}\n\nQuestion: {question}\nLet's solve this step by step!\nAnswer:\n" for question in questions]
 
+    # generate completions and extract function that solves problem
     completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 200, "do_sample": True, "temperature": 0.3, "top_p": 0.9, "top_k": 50, "num_return_sequences": 1 })
     completions = [pal_process_completion(tokenizer, completion) for completion in completions]
 
     pal_out = []
     for problem, completion in zip(batch, completions):
+        # execute function
         solution, err = pal_execute_completion(completion)
         if err != None:
+            # error executing function
             out = PALOut(problem["question"], problem["answer"], completion, None, 0, repr(err))
             pal_out.append(out)
-            pprint(out._asdict(), indent=2)
         if solution != problem["answer"]:
+            # function returned incorrect solution
             out = PALOut(problem["question"], problem["answer"], completion, solution, 0, None)
             pal_out.append(out)
-            pprint(out._asdict(), indent=2)
         else:
+            # function returned correct solution
             out = PALOut(problem["question"], problem["answer"], completion, solution, 1, None)
             pal_out.append(out)
     return pal_out
 
-def split_list(l, x):
-    return [l[i:i + x] for i in range(0, len(l), x)]
-
 def solve(model, tokenizer, test_data, technique):
     correct = 0
+
+    # split data set into batches of size 10
     batches = split_list(test_data.to_list(), 10)
     for batch in tqdm(batches):
         technique_out = technique(model, tokenizer, batch)
@@ -278,68 +328,50 @@ def solve(model, tokenizer, test_data, technique):
             correct += out.score
     return correct
 
-def main():
-    # load in data
+def load():
+    # load data set
     test_data = datasets.load_dataset("nuprl/engineering-llm-systems", "math_word_problems", split="test")
 
-    # load in tokenizer
+    # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL, padding_side="left")
     tokenizer.pad_token = tokenizer.eos_token 
 
-    # load in model
+    # load model
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16
     ).to(device=DEVICE)
 
-    n_samp = 5
-    # Zero shot prompting
-    num_correct = 0
-    for problem in tqdm(test_data):
+    return test_data, tokenizer, model
 
-        # test zero shot
-        num_correct += test_problem(f"Question: {problem['question']} \n Answer: ", problem['answer'], tokenizer, model, max_tokens=1, n_samples=n_samp, temp=.2)
+def main():
+    # load model name
+    if len(sys.argv) > 1:
+        MODEL = sys.argv[1]
 
-    print(f'Zero Shot Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
+    # load data set, tokenizer, and model
+    test_data, tokenizer, model = load()
 
-    # few shot prompting
-    num_correct = 0
-    for problem in tqdm(test_data):
+    # zero shot
+    print("Starting Zero Shot Prompting ...")
+    zero_shot_correct = solve(model, tokenizer, test_data, zero_shot)
+    print(f'Zero Shot Accuracy: {round(zero_shot_correct/50, 2)}')
 
-        # create multi shot prompt
-        few_shot_prompt = f"""Instruction: Solve the following math word problem and provide only the final numerical answer. Do not include explanations or steps.
-
-                    Examples:
-                    Q1: A train travels 120 miles in 3 hours. What is its average speed in miles per hour?
-                    A1: 40
-
-                    Q2: If a rectangle has a length of 8 cm and a width of 5 cm, what is its area in square centimeters?
-                    A2: 40
-
-                    Q3: A store sells apples for $1.25 each. If you buy 4 apples, how much do you pay in total?
-                    A3: 5.00
-
-                    Q4: {problem['question']}
-                    A4: """
-        
-        # test multi-shot
-        num_correct += test_problem(few_shot_prompt, problem['answer'], tokenizer, model, n_samples = n_samp, max_tokens = 1)
-
-
-    print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
+    # few shot
+    print("Starting Few Shot Prompting ...")
+    few_shot_correct = solve(model, tokenizer, test_data, few_shot)
+    print(f'Few Shot Accuracy: {round(few_shot_correct/50, 2)}')
 
     # chain of thought
-    print("Starting Chain-of-thought prompting ...")
+    print("Starting Chain-Of-Thought Prompting ...")
     cot_correct = solve(model, tokenizer, test_data, cot)
-    print(f"Chain-of-thought accuracy: {round(cot_correct/len(test_data), 2)}")
+    print(f"Chain-of-thought accuracy: {round(cot_correct/50, 2)}")
 
     # program-aided language model
-    print("Starting Program-aided language model prompting ...")
+    print("Starting Program-Aided Language Model Prompting ...")
     pal_correct = solve(model, tokenizer, test_data, pal)
-    print(f"Program-aided language models accuracy: {round(pal_correct/len(test_data), 2)}")
+    print(f"Program-Aided Language Models Accuracy: {round(pal_correct/50, 2)}")
 
     
 if __name__ == "__main__":
     main()
-
-
