@@ -8,11 +8,76 @@ from collections import namedtuple
 from pprint import pprint
 from tqdm.auto import tqdm
 
-PALOut = namedtuple("PALOut", ["question", "answer", "model_completion", "model_answer", "score", "error"])
+COTOut = namedtuple("COTOut", ["question", "answer", "completion", "solution", "score"])
+PALOut = namedtuple("PALOut", ["question", "answer", "completion", "solution", "score", "error"])
 
 MODEL = "/scratch/bchk/aguha/models/llama3p1_8b_base"
 DEVICE = "cuda"
 
+COT_PROMPT = f"""Instruction: Solve the following problem using a step-by-step approach. Follow these steps:
+    1. Identify the key information and given values.
+    2. Break the problem into smaller subproblems if necessary.
+    3. Perform the calculations systematically, explaining each step clearly.
+    4. Double-check your calculations for correctness.
+    5. At the end, output the final answer in the exact format:
+        Answer: X
+
+Examples:
+Question: A train travels 120 miles in 3 hours. What is its average speed in miles per hour?
+
+Reasoning: The train traveled 120 miles in 3 hours. To calculate average speed, we divide the distance by the time. Therefore, our answer is 120 / 3
+
+Answer: 40
+
+
+Question: A rectangle has a length of 8 cm and a width of 5 cm. What is the sum of its perimeter and area?
+
+Reasoning: The perimeter of a rectangle is p = 2 * (length + width). Therefore, the perimeter of the rectangle is p = 2 * (8 + 5) = 26. The area of a rectangle is a = l * w. Therefore, the area of the rectangle is a = 8 * 5 = 40. Therefore, our answer is 26 + 40 = 66.
+
+Answer: 66
+
+
+Question: Larry is buying water bottles for the next two weeks. For the first week, Larry drinks 2 bottles of water a day. For the second week, Larry drinks 2 times the amount of water he drank the first week. If a crate of water bottles has 21 water bottles, how many crates of water bottles does Larry have to buy for two weeks?
+
+Reasoning: In week 1, Larry drinks 2 bottles of water a day. Therefore, in week 1, Larry drinks 2 * 7 = 14 bottles of water. In week 2, Larry drinks 2 times the amount of water he drank in week 1. Therefore, in week 2, Larry drinks 14 * 2 = 28 bottles of water. In total, Larry drinks 14 + 28 = 42 bottles of water. If each crate has 21 water bottles, then Larry must buy 42 / 21 = 2 crates of water bottles in total.
+
+Answer: 2
+
+
+Question: A recipe calls for 2 cups of flour to make 12 cookies. How many cups of flour are needed to make 30 cookies?
+
+Reasoning: 2 cups of flour are required to make 12 cookies. Therefore, 2 / 12 = 1/6 cups of flour are required to make 1 cookie. Therefore, to make 30 cookies, we need 30 * 1/6 = 5 cups of flour in total.
+
+Answer: 5
+
+
+Question: It takes 3 workers 6 hours to paint a house. If 9 workers paint at the same rate, how long will it take them to paint the same house?
+
+Reasoning: It took 3 workers 6 hours to paint a house. Therefore, a total of 3 * 6 = 18 total worker hours were required to paint the house. If we had 9 workers who were working at the same pace, then it would take 18 / 9 = 2 hours to paint the house.
+
+Answer: 2
+
+
+Question: A password consists of 3 letters followed by 2 digits. If letters can be A-Z and digits can be 0-9, how many different passwords can be formed?
+
+Reasoning: Each of the first three characters in the password is a letter A-Z. Therefore, for each of the first three characters there are 26 options. Each of the last two characters in the password is a digit 0-9. Therefore, for each of the last two characters there are 10 options. Therefore, all together, there are 26 * 26 * 26 * 10 * 10 = 1757600 different possible passwords.
+
+Answer: 1757600
+
+
+Question: A store is having a 25% off sale. If a shirt originally costs $80, and there is also a 8% sales tax, how much will the shirt cost in total?
+
+Reasoning: The original price of the shirt was $80. If the store is having a 25% off sale, then the sale price of the shirt is $80 * 0.75 = $60. However, there is also an 8% sales tax. Therefore, the final price of the shirt is $60 * 1.08 = $64.8
+
+Answer: 64.8
+
+
+Question: Marie ordered one chicken meal that costs $12, 5 packs of milk that cost $3 each, 4 apples that cost $1.50 each, and some boxes of pizza. Marie paid a total of $50. How many boxes of pizza did Marie order if each box costs $8.50?
+
+Reasoning: Marie bought one chicke mean for $12. Therefore, Marie spent $12 on chicken. Marie bought 5 packs of milk for $3 each. Therefore, marie spent $15 on milk. Marie bought 4 applies for $1.50 each. Therefore, Marie spent $6 on apples. Therefore, Marie spent $12 + $15 + $6 = $33 on chicken, milk, and apples. If Marie spent $50 in total, then she spent $50 - $33 = $17 on boxes of pizza. If each box of pizza costs $8.50, then Marie bought $17 / $8.50 = 2 boxes of pizza.
+
+Answer: 2
+"""
 PAL_PROMPT = f"""Instruction: Solve each of the following math word problems by filling in function solve() with python code that solves the problem. Be sure to approach the problem step by step.
 
 Examples:
@@ -47,16 +112,6 @@ def solve():
     crates_needed = total_bottles / bottles_per_crate
     return crates_needed
 
-Question: Sally has 3 bags of marbles. The first bag has 12 marbles, the second has 8 marbles, and she has 5 fewer marbles in the third bag than the first bag. How many marbles does Sally have in total?
-Let's solve this step by step!
-Answer:
-def solve():
-    marbles_in_first_bag = 12
-    marbles_in_second_bag = 8
-    marbles_in_third_bag = marbles_in_first_bag - 5
-    total_marbles = marbles_in_first_bag + marbles_in_second_bag + marbles_in_third_bag
-    return total_marbles
-
 Question: A recipe calls for 2 cups of flour to make 12 cookies. How many cups of flour are needed to make 30 cookies?
 Let's solve this step by step!
 Answer:
@@ -73,29 +128,6 @@ def solve():
     num_workers = 9
     time_needed = total_worker_hours / num_workers
     return time_needed
-
-Question: A restaurant has 45 tables. If 28 tables are occupied and each table seats 4 people, how many empty seats are there?
-Let's solve this step by step!
-Answer:
-def solve():
-    total_tables = 45
-    seats_per_table = 4
-    total_seats = total_tables * seats_per_table
-    occupied_tables = 28
-    occupied_seats = occupied_tables * seats_per_table
-    empty_seats = total_seats - occupied_seats
-    return empty_seats
-    
-Question: Alex runs 4 laps during each workout session, and he works out 4 times a week. Each lap is 70 meters long. How many total meters does Alex run in a week?
-Let's solve this step by step!
-Answer:
-def solve():
-    laps_per_session = 4
-    sessions_per_week = 4
-    laps_per_week = laps_per_session * sessions_per_week
-    meters_per_lap = 70
-    total_meters = meters_per_lap * laps_per_week
-    return total_meters
 
 Question: A password consists of 3 letters followed by 2 digits. If letters can be A-Z and digits can be 0-9, how many different passwords can be formed?
 Let's solve this step by step!
@@ -116,19 +148,6 @@ def solve():
     tax_amount = discount_price * 0.08
     final_price = discount_price + tax_amount
     return final_price
-    
-Question: Ben eats one sandwich a day and buys packs that contain 10 sandwiches each at a cost of $5 per pack. How much will he spend on sandwiches in 50 days?
-Let's solve this step by step!
-Answer:
-def solve():
-    sandwiches_per_day = 1
-    num_days = 50
-    total_sandwiches = sandwiches_per_day * num_days
-    sandwiches_per_pack = 10
-    num_packs_needed = total_sandwiches / sandwiches_per_pack
-    cost_per_pack = 5
-    total_cost = num_packs_needed * cost_per_pack
-    return total_cost
 
 Question: Marie ordered one chicken meal that costs $12, 5 packs of milk that cost $3 each, 4 apples that cost $1.50 each, and some boxes of pizza. Marie paid a total of $50. How many boxes of pizza did Marie order if each box costs $8.50?
 Let's solve this step by step!
@@ -176,94 +195,92 @@ def test_problem(prompt, answer, tokenizer, model, max_tokens = 300, n_samples =
 
     return num_correct
 
-def test_problem_chain(prompt, answer, tokenizer, model, max_tokens = 300, n_samples =20, temp=.2):
-    # this generates solutions and returns the number of correct math solutions for a chain of thought prompt
-
-    # get solutions
-    solutions = generate_solutions(prompt, tokenizer, model, max_new_tokens = max_tokens, n_samples = n_samples, temperature=temp)
-    
-    num_correct = 0
-    for sol in solutions:
-        
-        # extact answer from response
-        match = re.search(r'ANSWER[^0-9$+-]*\s*\$?([-+]?\d*\.?\d+)', sol)
-        if match:
-            extracted_answer = float(match.group(1))
-            
-            # check for correctness of answer
-            if extracted_answer == answer:
-                num_correct+=1
-
-    return num_correct
-
-def generate_batch(prompts, tokenizer, model):
+def generate_batch(prompts, tokenizer, model, kwargs):
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(DEVICE)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             pad_token_id=tokenizer.eos_token_id,
-            max_new_tokens=200,
-            do_sample=True,
-            temperature=0.3,
-            top_p=0.9,
-            top_k=50,
-            num_return_sequences=1)
-    return [tokenizer.decode(output[inputs["input_ids"].shape[1]:]) for output in outputs]
+            **kwargs)
+    outputs = [output[inputs["input_ids"].shape[1]:] for output in outputs]
+    return [tokenizer.decode(output) for output in outputs]
 
-def execute_completion(completion):
+def cot_process_completion(completion):
+    match = re.search(r'Answer[^0-9$+-]*\s*\$?([-+]?\d*\.?\d+)', completion)
+    if match:
+        return round(float(match.group(1)))
+    return completion.strip()
+
+def cot(model, tokenizer, batch):
+    questions = [problem["question"] for problem in batch]
+    prompts = [f"{COT_PROMPT}\n\nQuestion: {question}\n\nReasoning:" for question in questions]
+
+    completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 300, "do_sample": True, "temperature": 0.2, "top_p": 0.9, "top_k": 50, "num_return_sequences": 1 })
+    cot_out = []
+    for problem, completion in zip(batch, completions):
+        solution = cot_process_completion(completion)
+        if solution != problem["answer"]:
+            out = COTOut(problem["question"], problem["answer"], completion, solution, 0)
+            cot_out.append(out)
+            pprint(out._asdict(), indent=2)
+        else:
+            out = COTOut(problem["question"], problem["answer"], completion, solution, 1)
+            cot_out.append(out)
+    return cot_out
+
+def pal_execute_completion(completion):
     try:
         exec(completion)
-        ans = round(eval("solve()"))
-        return ans, None
+        solution = round(eval("solve()"))
+        return solution, None
     except Exception as e:
         return None, e
 
-def process_completion(tokenizer, completion):
+def pal_process_completion(tokenizer, completion):
     split_index = min(
         completion.find("Question") if "Question" in completion else float("inf"),
         completion.find(tokenizer.eos_token) if tokenizer.eos_token in completion else float("inf")
     )
     return completion[:split_index].strip() if split_index != float("inf") else completion.strip()
 
-def pal_batch(model, tokenizer, batch):
+def pal(model, tokenizer, batch):
     questions = [problem["question"] for problem in batch]
     prompts = [f"{PAL_PROMPT}\n\nQuestion: {question}\nLet's solve this step by step!\nAnswer:\n" for question in questions]
-    completions = generate_batch(prompts, tokenizer, model)
-    completions = [process_completion(tokenizer, completion) for completion in completions]
-    pal_batch_out = []
+
+    completions = generate_batch(prompts, tokenizer, model, { "max_new_tokens": 200, "do_sample": True, "temperature": 0.3, "top_p": 0.9, "top_k": 50, "num_return_sequences": 1 })
+    completions = [pal_process_completion(tokenizer, completion) for completion in completions]
+
+    pal_out = []
     for problem, completion in zip(batch, completions):
-        model_answer, err = execute_completion(completion)
+        solution, err = pal_execute_completion(completion)
         if err != None:
-            pal_out = PALOut(problem["question"], problem["answer"], completion, None, 0, repr(err))
-            pal_batch_out.append(pal_out)
-            pprint(pal_out._asdict(), indent=2)
-        if model_answer != problem["answer"]:
-            pal_out = PALOut(problem["question"], problem["answer"], completion, model_answer, 0, None)
-            pal_batch_out.append(pal_out)
-            pprint(pal_out._asdict(), indent=2)
+            out = PALOut(problem["question"], problem["answer"], completion, None, 0, repr(err))
+            pal_out.append(out)
+            pprint(out._asdict(), indent=2)
+        if solution != problem["answer"]:
+            out = PALOut(problem["question"], problem["answer"], completion, solution, 0, None)
+            pal_out.append(out)
+            pprint(out._asdict(), indent=2)
         else:
-            pal_out = PALOut(problem["question"], problem["answer"], completion, model_answer, 1, None)
-            pal_batch_out.append(pal_out)
-    return pal_batch_out
+            out = PALOut(problem["question"], problem["answer"], completion, solution, 1, None)
+            pal_out.append(out)
+    return pal_out
 
-def split_list(dict_list, x):
-    return [dict_list[i:i + x] for i in range(0, len(dict_list), x)]
+def split_list(l, x):
+    return [l[i:i + x] for i in range(0, len(l), x)]
 
-def pal(model, tokenizer, test_data):
+def solve(model, tokenizer, test_data, technique):
     correct = 0
     batches = split_list(test_data.to_list(), 10)
     for batch in tqdm(batches):
-        pal_batch_out = pal_batch(model, tokenizer, batch)
-        for pal_out in pal_batch_out:
-            correct += pal_out.score
+        technique_out = technique(model, tokenizer, batch)
+        for out in technique_out:
+            correct += out.score
     return correct
 
 def main():
-
     # load in data
     test_data = datasets.load_dataset("nuprl/engineering-llm-systems", "math_word_problems", split="test")
-
-    n_samp = 5
 
     # load in tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL, padding_side="left")
@@ -272,9 +289,10 @@ def main():
     # load in model
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16
     ).to(device=DEVICE)
 
+    n_samp = 5
     # Zero shot prompting
     num_correct = 0
     for problem in tqdm(test_data):
@@ -310,33 +328,15 @@ def main():
 
     print(f'Few Shot Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
 
-    num_correct = 0
-    for problem in tqdm(test_data):
-        
-        # create chain of thought prompt
-        chain_prompt = f"""
-        Instruction: Solve the following problem using a step-by-step approach. Follow these steps:
-        1. Identify the key information and given values.
-        2. Break the problem into smaller subproblems if necessary.
-        3. Perform the calculations systematically, explaining each step clearly.
-        4. Double-check your calculations for correctness.
-        5. At the end, output the final answer in the exact format:
+    # chain of thought
+    print("Starting Chain-of-thought prompting ...")
+    cot_correct = solve(model, tokenizer, test_data, cot)
+    print(f"Chain-of-thought accuracy: {round(cot_correct/len(test_data), 2)}")
 
-           ANSWER: X
-
-        Question: {problem['question']}
-
-        Explanation:
-        """
-
-        # test chain of thought
-        num_correct += test_problem_chain(chain_prompt, problem['answer'], tokenizer, model, n_samples = n_samp, max_tokens = 500)
-
-
-    print(f'Chain of Thought Accuracy: {round(num_correct/(len(test_data)*n_samp), 2)}')
-
-    num_correct = pal(model, tokenizer, test_data)
-    print(f"Program-Aided Language Models Accuracy: {round(num_correct/len(test_data), 2)}")
+    # program-aided language model
+    print("Starting Program-aided language model prompting ...")
+    pal_correct = solve(model, tokenizer, test_data, pal)
+    print(f"Program-aided language models accuracy: {round(pal_correct/len(test_data), 2)}")
 
     
 if __name__ == "__main__":
